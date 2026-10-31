@@ -72,7 +72,7 @@ jobs:
           find . -xtype l -not -path './.git/*' | while read l; do rm "$l"; mkdir -p "$l"; touch "$l/Kconfig" "$l/Makefile"; done
           # config is used as-is: options like MODULE_SCMVERSION / DEBUG_INFO_BTF_MODULES change
           # struct module layout, and a mismatch crashes the kernel in load_module
-          mkdir out && cp ../${{ inputs.config }} out/.config
+          mkdir out && cp $GITHUB_WORKSPACE/${{ inputs.config }} out/.config
           # stub any further Kconfig the oplus dirs would have provided
           for i in $(seq 100); do
             f=$(make O=out olddefconfig 2>&1 | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
@@ -81,9 +81,9 @@ jobs:
           done
           make O=out olddefconfig
           echo "=== options enabled on device but dropped here ==="
-          comm -23 <(grep -E '^CONFIG_.*=[ym]' ../${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee ../dropped.txt
+          comm -23 <(grep -E '^CONFIG_.*=[ym]' $GITHUB_WORKSPACE/${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee $GITHUB_WORKSPACE/dropped.txt
           # only stubbed vendor drivers may drop; anything else means the build no longer matches the device kernel
-          if grep -E 'MODULE|BTF|DEBUG_INFO|LOCALVERSION|LTO|KALLSYMS|CFI|MODVERSIONS' ../dropped.txt; then
+          if grep -E 'MODULE|BTF|DEBUG_INFO|LOCALVERSION|LTO|KALLSYMS|CFI|MODVERSIONS' $GITHUB_WORKSPACE/dropped.txt; then
             echo "::error::core config options dropped, refusing to build"; exit 1
           fi
           make O=out -j$(nproc) modules_prepare
