@@ -48,6 +48,8 @@ jobs:
         run: |
           # dwarves (pahole) for DEBUG_INFO_BTF / BTF_MODULES
           sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves
+          # ThinLTO linking of vmlinux outgrows the runner's 16 GB RAM and the job gets killed
+          sudo fallocate -l 24G /mnt/swap && sudo chmod 600 /mnt/swap && sudo mkswap /mnt/swap && sudo swapon /mnt/swap
           echo "$PWD/clang/bin" >> "$GITHUB_PATH"
           clang/bin/clang --version | head -1
 
