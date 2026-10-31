@@ -25,11 +25,9 @@ jobs:
 
       - name: Deps and clang
         run: |
-          sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev
-          # googlesource +archive is too slow; kernel.org LLVM 19 matches the config's clang major
-          mkdir clang
-          curl -fsSL https://mirrors.edge.kernel.org/pub/tools/llvm/files/llvm-19.1.7-x86_64.tar.xz | tar xJ -C clang --strip-components=1
-          echo "$PWD/clang/bin" >> "$GITHUB_PATH"
+          # clang 19 matches the config's clang major; googlesource/kernel.org downloads are slow or blocked here
+          sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev clang-19 lld-19 llvm-19
+          echo /usr/lib/llvm-19/bin >> "$GITHUB_PATH"
 
       - name: Kernel source
         run: |
