@@ -1,4 +1,4 @@
-name: Build BakaSU LKM for YAAP waffle
+name: Build KernelSU LKM for YAAP waffle
 
 on:
   workflow_dispatch:
@@ -9,9 +9,15 @@ on:
       config:
         description: kernel config file in this repo (IKCONFIG from boot.img)
         default: yaap_waffle_20261029.config
+      ksu_repo:
+        description: KernelSU fork to build (KernelSU-Next/KernelSU-Next for a known-good reference)
+        default: Baka-SU/BakaSU
       ksu_ref:
-        description: Baka-SU/BakaSU tag, must match manager version
+        description: tag in ksu_repo, must match manager version
         default: v4.2.0-rc3
+      ksu_flags:
+        description: extra make flags (empty for KernelSU-Next)
+        default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
 
 jobs:
   build:
@@ -84,18 +90,18 @@ jobs:
 
       - name: Build kernelsu.ko
         run: |
-          git clone -q --filter=blob:none -b ${{ inputs.ksu_ref }} https://github.com/Baka-SU/BakaSU ksu
+          git clone -q --filter=blob:none -b ${{ inputs.ksu_ref }} https://github.com/${{ inputs.ksu_repo }} ksu
           cd ksu/kernel
           # no vmlinux/Module.symvers: modpost only warns on unresolved symbols, ksuinit resolves them via kallsyms
           make -C ../../k/out M=$PWD src=$PWD -j$(nproc) modules \
-            CONFIG_KSU=m CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y KBUILD_MODPOST_WARN=1 \
-            KCFLAGS="$KCFLAGS -Wno-error"  # YAAP tree has CONFIG_WERROR; BakaSU has harmless warnings
+            CONFIG_KSU=m ${{ inputs.ksu_flags }} KBUILD_MODPOST_WARN=1 \
+            KCFLAGS="$KCFLAGS -Wno-error"  # YAAP tree has CONFIG_WERROR; KSU forks have harmless warnings
           llvm-strip -d kernelsu.ko
-          strings kernelsu.ko | grep -E '^vermagic=|ReSukiSU' | head
+          strings kernelsu.ko | grep -E '^vermagic=|ReSukiSU|welcome to KernelSU' | head
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-${{ inputs.ksu_ref }}-yaap-${{ inputs.kernel_ref }}
+          name: kernelsu-${{ github.run_id }}-${{ inputs.ksu_ref }}
           path: |
             ksu/kernel/kernelsu.ko
             dropped.txt
