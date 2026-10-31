@@ -69,16 +69,16 @@ jobs:
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           mkdir out
+          # further Kconfig files the stubbed oplus dirs would have provided; any Kconfig run trips on them
+          for i in $(seq 100); do
+            f=$( (make O=out gki_defconfig 2>&1 || true) | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
+            [ -z "$f" ] && break; echo "stub $f"; mkdir -p "$(dirname "$f")"; touch "$f"
+          done
           make O=out gki_defconfig
           c=arch/arm64/configs
           scripts/kconfig/merge_config.sh -m -O out out/.config \
             $c/vendor/pineapple_GKI.config $c/vendor/oplus/pineapple_GKI.config $c/vendor/oplus/waffle.config
           { echo CONFIG_KSU=m; for x in ${{ inputs.ksu_config }}; do echo $x; done; } >> out/.config
-          # further Kconfig files the stubbed oplus dirs would have provided
-          for i in $(seq 100); do
-            f=$( (make O=out olddefconfig 2>&1 || true) | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
-            [ -z "$f" ] && break; echo "stub $f"; mkdir -p "$(dirname "$f")"; touch "$f"
-          done
           make O=out olddefconfig
           grep -E '^CONFIG_(KSU|USER_NS|LTO_CLANG_THIN|AUTOFDO_CLANG)' out/.config
 
