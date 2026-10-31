@@ -39,6 +39,8 @@ jobs:
       - name: Prepare kernel tree
         working-directory: k
         run: |
+          # oplus drivers are symlinks into repos outside this tree; LKM doesn't need them, stub them out
+          find . -xtype l -not -path './.git/*' | while read l; do rm "$l"; mkdir -p "$l"; touch "$l/Kconfig" "$l/Makefile"; done
           mkdir out && cp ../${{ inputs.config }} out/.config
           # vermagic must equal running kernel's uname -r: 6.1.177-@<short hash>
           short=$(echo ${{ inputs.kernel_ref }} | cut -c1-8)
