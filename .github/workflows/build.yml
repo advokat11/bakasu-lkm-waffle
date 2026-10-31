@@ -47,6 +47,12 @@ jobs:
           scripts/config --file out/.config -d LTO_CLANG_THIN -d LTO_CLANG -e LTO_NONE \
             -d LOCALVERSION_AUTO --set-str LOCALVERSION "-@$short"
           export LOCALVERSION=
+          # stub any further Kconfig the oplus dirs would have provided
+          for i in $(seq 100); do
+            f=$(make O=out olddefconfig 2>&1 | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
+            [ -z "$f" ] && break
+            echo "stub $f"; mkdir -p "$(dirname "$f")"; touch "$f"
+          done
           make O=out olddefconfig
           echo "=== options enabled on device but dropped here ==="
           comm -23 <(grep -E '^CONFIG_.*=[ym]' ../${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee ../dropped.txt
