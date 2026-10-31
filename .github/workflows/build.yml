@@ -68,7 +68,8 @@ jobs:
           cd ksu/kernel
           # no vmlinux/Module.symvers: modpost only warns on unresolved symbols, ksuinit resolves them via kallsyms
           make -C ../../k/out M=$PWD src=$PWD -j$(nproc) modules \
-            CONFIG_KSU=m CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y KBUILD_MODPOST_WARN=1
+            CONFIG_KSU=m CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y KBUILD_MODPOST_WARN=1 \
+            KCFLAGS="$KCFLAGS -Wno-error"  # YAAP tree has CONFIG_WERROR; BakaSU has harmless warnings
           llvm-strip -d kernelsu.ko
           strings kernelsu.ko | grep -E '^vermagic=|ReSukiSU' | head
 
