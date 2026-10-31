@@ -20,6 +20,8 @@ jobs:
       ARCH: arm64
       LLVM: 1
       LLVM_IAS: 1
+      # tree targets clang 22 (e.g. -Werror=alloc-size); clang 19 must ignore unknown flags
+      KCFLAGS: -Wno-unknown-warning-option
     steps:
       - uses: actions/checkout@v4
 
