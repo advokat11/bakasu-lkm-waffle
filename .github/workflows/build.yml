@@ -1,27 +1,28 @@
 name: Build KernelSU LKM for YAAP waffle
 
+# Reproduces the ROM's kernel build so the module matches the running kernel:
+# - config from the device tree fragments (the IKCONFIG embedded in boot.img is stale and bootloops modules)
+# - the exact clang build the ROM used (see /proc/version: "Android (15071444, ...")
+# - full vmlinux with ThinLTO, KernelSU built in-tree as drivers/kernelsu (intree=Y), like the ROM dev's LKM
+
 on:
   workflow_dispatch:
     inputs:
       kernel_ref:
         description: yaap/kernel_oneplus_sm8650 commit (hash from uname -r)
         default: 6b7cc6b40d92bac4cd2e399be260497e02fff26b
-      config:
-        description: kernel config file in this repo (IKCONFIG from boot.img)
-        default: yaap_waffle_20261029.config
       ksu_repo:
-        description: KernelSU fork to build (KernelSU-Next/KernelSU-Next for a known-good reference)
+        description: KernelSU fork (KernelSU-Next/KernelSU-Next reproduces the ROM dev's module)
         default: Baka-SU/BakaSU
       ksu_ref:
-        description: tag in ksu_repo, must match manager version
+        description: tag in ksu_repo, must match the manager version
         default: v4.2.0-rc3
-      ksu_flags:
-        description: extra make flags (empty for KernelSU-Next)
+      ksu_config:
+        description: extra Kconfig lines for the fork (empty for KernelSU-Next)
         default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
-      full_build:
-        description: build vmlinux first (ThinLTO, real Module.symvers CRCs and BTF, like the ROM build)
-        type: boolean
-        default: true
+      clang_commit:
+        description: platform/prebuilts/clang/host/linux-x86 commit holding the ROM's clang-r596125 build
+        default: 9b144befdfd93b90e02c663504fb9f4b95f9faf8
 
 jobs:
   build:
@@ -30,91 +31,73 @@ jobs:
       ARCH: arm64
       LLVM: 1
       LLVM_IAS: 1
-      # tree targets clang 22 (e.g. -Werror=alloc-size); clang 19 must ignore unknown flags
-      KCFLAGS: -Wno-unknown-warning-option
     steps:
-      - uses: actions/checkout@v4
-
-      # must be the exact clang the kernel was built with (see /proc/version): kCFI type hashes
-      # differ between clang versions, and a mismatch panics on the first indirect call into the module
       - uses: actions/cache@v4
         id: clang
         with:
           path: clang
-          key: clang-r596125
+          key: clang-${{ inputs.clang_commit }}
 
-      - name: Download clang-r596125 (slow, cached afterwards)
+      - name: Download clang (slow, cached afterwards)
         if: steps.clang.outputs.cache-hit != 'true'
         run: |
           mkdir clang
-          curl -fsSL --retry 3 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/b896c53892be0ae507473a9f3dce67907edf4965/clang-r596125.tar.gz | tar xz -C clang
+          curl -fsSL --retry 3 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${{ inputs.clang_commit }}/clang-r596125.tar.gz | tar xz -C clang
 
       - name: Deps
         run: |
-          # dwarves (pahole) keeps DEBUG_INFO_BTF_MODULES, which adds fields to struct module
+          # dwarves (pahole) for DEBUG_INFO_BTF / BTF_MODULES
           sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves
           echo "$PWD/clang/bin" >> "$GITHUB_PATH"
           clang/bin/clang --version | head -1
 
-      - name: Kernel source
+      - name: Sources
         run: |
           # a full kernel build needs ~25 GB; / on the runner is too small, /mnt has room
           sudo mkdir -p /mnt/k && sudo chown $USER /mnt/k && ln -s /mnt/k k
-          git init -q k && cd k
-          git remote add o https://github.com/yaap/kernel_oneplus_sm8650
-          git fetch -q --depth 1 o ${{ inputs.kernel_ref }}
-          git checkout -q FETCH_HEAD
+          git -C k init -q && git -C k remote add o https://github.com/yaap/kernel_oneplus_sm8650
+          git -C k fetch -q --depth 1 o ${{ inputs.kernel_ref }} && git -C k checkout -q FETCH_HEAD
+          # full history: KSU derives its version code from the commit count
+          git clone -q --filter=blob:none -b ${{ inputs.ksu_ref }} https://github.com/${{ inputs.ksu_repo }} ksu
 
-      - name: Prepare kernel tree
+      - name: Config (gki_defconfig + device tree fragments)
         working-directory: k
         run: |
-          # oplus drivers are symlinks into repos outside this tree; LKM doesn't need them, stub them out
+          # oplus drivers are symlinks into repos outside this tree; stub them, the module doesn't use them
           find . -xtype l -not -path './.git/*' | while read l; do rm "$l"; mkdir -p "$l"; touch "$l/Kconfig" "$l/Makefile"; done
-          # config is used as-is: options like MODULE_SCMVERSION / DEBUG_INFO_BTF_MODULES change
-          # struct module layout, and a mismatch crashes the kernel in load_module
-          mkdir out && cp $GITHUB_WORKSPACE/${{ inputs.config }} out/.config
-          # stub any further Kconfig the oplus dirs would have provided
+          ln -sfn $GITHUB_WORKSPACE/ksu/kernel drivers/kernelsu
+          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          mkdir out
+          make O=out gki_defconfig
+          c=arch/arm64/configs
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            $c/vendor/pineapple_GKI.config $c/vendor/oplus/pineapple_GKI.config $c/vendor/oplus/waffle.config
+          { echo CONFIG_KSU=m; for x in ${{ inputs.ksu_config }}; do echo $x; done; } >> out/.config
+          # further Kconfig files the stubbed oplus dirs would have provided
           for i in $(seq 100); do
-            f=$(make O=out olddefconfig 2>&1 | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
-            [ -z "$f" ] && break
-            echo "stub $f"; mkdir -p "$(dirname "$f")"; touch "$f"
+            f=$( (make O=out olddefconfig 2>&1 || true) | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
+            [ -z "$f" ] && break; echo "stub $f"; mkdir -p "$(dirname "$f")"; touch "$f"
           done
           make O=out olddefconfig
-          echo "=== options enabled on device but dropped here ==="
-          comm -23 <(grep -E '^CONFIG_.*=[ym]' $GITHUB_WORKSPACE/${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee $GITHUB_WORKSPACE/dropped.txt
-          # only stubbed vendor drivers may drop; anything else means the build no longer matches the device kernel
-          if grep -E 'MODULE|BTF|DEBUG_INFO|LOCALVERSION|LTO|KALLSYMS|CFI|MODVERSIONS' $GITHUB_WORKSPACE/dropped.txt; then
-            echo "::error::core config options dropped, refusing to build"; exit 1
-          fi
-          make O=out -j$(nproc) modules_prepare
-          make O=out -j$(nproc) security/selinux/built-in.a
-          if [ "${{ inputs.full_build }}" = true ]; then
-            # vmlinux gives Module.symvers (CRCs) and vmlinux BTF for the module's split BTF
-            make O=out -j$(nproc) vmlinux
-            ls -l out/vmlinux out/Module.symvers
-          fi
-          # vermagic must equal running kernel's uname -r: 6.1.177-@<short hash>
-          rel="$(make -s O=out kernelversion)-@$(echo ${{ inputs.kernel_ref }} | cut -c1-8)"
-          echo "$rel" > out/include/config/kernel.release
-          echo "#define UTS_RELEASE \"$rel\"" > out/include/generated/utsrelease.h
-          cat out/include/generated/utsrelease.h
+          grep -E '^CONFIG_(KSU|USER_NS|LTO_CLANG_THIN|AUTOFDO_CLANG)' out/.config
 
-      - name: Build kernelsu.ko
+      - name: Kernel (vmlinux, ThinLTO)
+        working-directory: k
         run: |
-          git clone -q --filter=blob:none -b ${{ inputs.ksu_ref }} https://github.com/${{ inputs.ksu_repo }} ksu
-          cd ksu/kernel
-          # no vmlinux/Module.symvers: modpost only warns on unresolved symbols, ksuinit resolves them via kallsyms
-          make -C ../../k/out M=$PWD src=$PWD -j$(nproc) modules \
-            CONFIG_KSU=m ${{ inputs.ksu_flags }} KBUILD_MODPOST_WARN=1 \
-            KCFLAGS="$KCFLAGS -Wno-error"  # YAAP tree has CONFIG_WERROR; KSU forks have harmless warnings
-          cp kernelsu.ko ../../kernelsu-unstripped.ko
-          llvm-strip -d kernelsu.ko
-          strings kernelsu.ko | grep -E '^vermagic=|ReSukiSU|welcome to KernelSU' | head
+          make O=out -j$(nproc) vmlinux
+          strings out/vmlinux | grep -m1 '^Linux version'
+
+      - name: kernelsu.ko
+        working-directory: k
+        run: |
+          make O=out -j$(nproc) modules_prepare
+          cp out/vmlinux.symvers out/Module.symvers
+          make O=out -j$(nproc) drivers/kernelsu/kernelsu.ko
+          llvm-strip -d -o $GITHUB_WORKSPACE/kernelsu.ko out/drivers/kernelsu/kernelsu.ko
+          strings $GITHUB_WORKSPACE/kernelsu.ko | grep -E '^vermagic=|^intree=|@ReSukiSU|welcome to KernelSU'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-${{ github.run_id }}-${{ inputs.ksu_ref }}
-          path: |
-            ksu/kernel/kernelsu.ko
-            kernelsu-unstripped.ko
-            dropped.txt
+          name: kernelsu-${{ inputs.ksu_ref }}-${{ github.run_id }}
+          path: kernelsu.ko
