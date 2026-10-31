@@ -48,6 +48,8 @@ jobs:
             -d LOCALVERSION_AUTO --set-str LOCALVERSION "-@$short"
           export LOCALVERSION=
           make O=out olddefconfig
+          echo "=== options enabled on device but dropped here ==="
+          comm -23 <(grep -E '^CONFIG_.*=[ym]' ../${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee ../dropped.txt
           make O=out -j$(nproc) modules_prepare
           make O=out -j$(nproc) security/selinux/built-in.a
           cat out/include/generated/utsrelease.h
@@ -65,4 +67,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kernelsu-${{ inputs.ksu_ref }}-yaap-${{ inputs.kernel_ref }}
-          path: ksu/kernel/kernelsu.ko
+          path: |
+            ksu/kernel/kernelsu.ko
+            dropped.txt
