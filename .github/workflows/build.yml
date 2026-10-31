@@ -41,7 +41,8 @@ jobs:
 
       - name: Deps
         run: |
-          sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev
+          # dwarves (pahole) keeps DEBUG_INFO_BTF_MODULES, which adds fields to struct module
+          sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves
           echo "$PWD/clang/bin" >> "$GITHUB_PATH"
           clang/bin/clang --version | head -1
 
@@ -57,12 +58,9 @@ jobs:
         run: |
           # oplus drivers are symlinks into repos outside this tree; LKM doesn't need them, stub them out
           find . -xtype l -not -path './.git/*' | while read l; do rm "$l"; mkdir -p "$l"; touch "$l/Kconfig" "$l/Makefile"; done
+          # config is used as-is: options like MODULE_SCMVERSION / DEBUG_INFO_BTF_MODULES change
+          # struct module layout, and a mismatch crashes the kernel in load_module
           mkdir out && cp ../${{ inputs.config }} out/.config
-          # vermagic must equal running kernel's uname -r: 6.1.177-@<short hash>
-          short=$(echo ${{ inputs.kernel_ref }} | cut -c1-8)
-          scripts/config --file out/.config -d LTO_CLANG_THIN -d LTO_CLANG -e LTO_NONE \
-            -d LOCALVERSION_AUTO --set-str LOCALVERSION "-@$short"
-          export LOCALVERSION=
           # stub any further Kconfig the oplus dirs would have provided
           for i in $(seq 100); do
             f=$(make O=out olddefconfig 2>&1 | sed -n 's/.*can.t open file "\(.*\)"/\1/p' | head -1)
@@ -72,8 +70,16 @@ jobs:
           make O=out olddefconfig
           echo "=== options enabled on device but dropped here ==="
           comm -23 <(grep -E '^CONFIG_.*=[ym]' ../${{ inputs.config }} | sort) <(grep -E '^CONFIG_.*=[ym]' out/.config | sort) | tee ../dropped.txt
+          # only stubbed vendor drivers may drop; anything else means the build no longer matches the device kernel
+          if grep -E 'MODULE|BTF|DEBUG_INFO|LOCALVERSION|LTO|KALLSYMS|CFI|MODVERSIONS' ../dropped.txt; then
+            echo "::error::core config options dropped, refusing to build"; exit 1
+          fi
           make O=out -j$(nproc) modules_prepare
           make O=out -j$(nproc) security/selinux/built-in.a
+          # vermagic must equal running kernel's uname -r: 6.1.177-@<short hash>
+          rel="$(make -s O=out kernelversion)-@$(echo ${{ inputs.kernel_ref }} | cut -c1-8)"
+          echo "$rel" > out/include/config/kernel.release
+          echo "#define UTS_RELEASE \"$rel\"" > out/include/generated/utsrelease.h
           cat out/include/generated/utsrelease.h
 
       - name: Build kernelsu.ko
