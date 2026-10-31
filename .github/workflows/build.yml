@@ -18,6 +18,10 @@ on:
       ksu_flags:
         description: extra make flags (empty for KernelSU-Next)
         default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
+      full_build:
+        description: build vmlinux first (ThinLTO, real Module.symvers CRCs and BTF, like the ROM build)
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -54,6 +58,8 @@ jobs:
 
       - name: Kernel source
         run: |
+          # a full kernel build needs ~25 GB; / on the runner is too small, /mnt has room
+          sudo mkdir -p /mnt/k && sudo chown $USER /mnt/k && ln -s /mnt/k k
           git init -q k && cd k
           git remote add o https://github.com/yaap/kernel_oneplus_sm8650
           git fetch -q --depth 1 o ${{ inputs.kernel_ref }}
@@ -82,6 +88,11 @@ jobs:
           fi
           make O=out -j$(nproc) modules_prepare
           make O=out -j$(nproc) security/selinux/built-in.a
+          if [ "${{ inputs.full_build }}" = true ]; then
+            # vmlinux gives Module.symvers (CRCs) and vmlinux BTF for the module's split BTF
+            make O=out -j$(nproc) vmlinux
+            ls -l out/vmlinux out/Module.symvers
+          fi
           # vermagic must equal running kernel's uname -r: 6.1.177-@<short hash>
           rel="$(make -s O=out kernelversion)-@$(echo ${{ inputs.kernel_ref }} | cut -c1-8)"
           echo "$rel" > out/include/config/kernel.release
@@ -96,6 +107,7 @@ jobs:
           make -C ../../k/out M=$PWD src=$PWD -j$(nproc) modules \
             CONFIG_KSU=m ${{ inputs.ksu_flags }} KBUILD_MODPOST_WARN=1 \
             KCFLAGS="$KCFLAGS -Wno-error"  # YAAP tree has CONFIG_WERROR; KSU forks have harmless warnings
+          cp kernelsu.ko ../../kernelsu-unstripped.ko
           llvm-strip -d kernelsu.ko
           strings kernelsu.ko | grep -E '^vermagic=|ReSukiSU|welcome to KernelSU' | head
 
@@ -104,4 +116,5 @@ jobs:
           name: kernelsu-${{ github.run_id }}-${{ inputs.ksu_ref }}
           path: |
             ksu/kernel/kernelsu.ko
+            kernelsu-unstripped.ko
             dropped.txt
