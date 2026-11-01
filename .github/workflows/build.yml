@@ -36,20 +36,46 @@ jobs:
         id: clang
         with:
           path: clang
-          key: clang-${{ inputs.clang_commit }}
+          key: clang-r596125 # r596125 is hardcoded in the URL below; bump both together
 
       - name: Download clang (slow, cached afterwards)
         if: steps.clang.outputs.cache-hit != 'true'
         run: |
-          mkdir clang
+          mkdir -p clang
           curl -fsSL --retry 3 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${{ inputs.clang_commit }}/clang-r596125.tar.gz | tar xz -C clang
 
-      - name: Deps
+      - name: Save clang cache (the post-step never runs when the job dies)
+        if: steps.clang.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: clang
+          key: clang-r596125
+
+      - name: Deps (packages)
         run: |
+          set -euxo pipefail
+          free -h; df -h / /mnt
           # dwarves (pahole) for DEBUG_INFO_BTF / BTF_MODULES
-          sudo apt-get update && sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev dwarves
+
+      - name: Deps (swap on /mnt)
+        run: |
+          set -euxo pipefail
           # ThinLTO linking of vmlinux outgrows the runner's 16 GB RAM and the job gets killed
-          sudo fallocate -l 24G /mnt/swap && sudo chmod 600 /mnt/swap && sudo mkswap /mnt/swap && sudo swapon /mnt/swap
+          # 24 G swap + ~25 G build tree share /mnt, so refuse when it clearly won't fit
+          avail=$(df -BG --output=avail /mnt | tail -1 | tr -dc 0-9)
+          echo "mnt free: ${avail}G"; test "$avail" -gt 50
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          sudo sysctl -w vm.swappiness=10
+          sudo swapon --show; free -h
+
+      - name: Deps (clang on PATH)
+        run: |
+          set -euxo pipefail
           echo "$PWD/clang/bin" >> "$GITHUB_PATH"
           clang/bin/clang --version | head -1
 
