@@ -15,8 +15,8 @@ on:
         description: KernelSU fork (KernelSU-Next/KernelSU-Next reproduces the ROM dev's module)
         default: Baka-SU/BakaSU
       ksu_ref:
-        description: tag in ksu_repo, must match the manager version
-        default: v4.2.0-rc3
+        description: branch/tag/sha in ksu_repo; version code = 30700 + git rev-list --count, must match the manager
+        default: main
       ksu_config:
         description: extra Kconfig lines for the fork (empty for KernelSU-Next)
         default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
@@ -100,8 +100,12 @@ jobs:
           sudo mkdir -p /mnt/k && sudo chown $USER /mnt/k && ln -s /mnt/k k
           git -C k init -q && git -C k remote add o https://github.com/yaap/kernel_oneplus_sm8650
           git -C k fetch -q --depth 1 o ${{ inputs.kernel_ref }} && git -C k checkout -q FETCH_HEAD
-          # full history: KSU derives its version code from the commit count
-          git clone -q --filter=blob:none -b ${{ inputs.ksu_ref }} https://github.com/${{ inputs.ksu_repo }} ksu
+          # full history: KSU derives its version code from the commit count (30700 + rev-list --count),
+          # so the ref must be fetched with all its ancestors -- no --depth, and it may be a sha
+          git clone -q --filter=blob:none https://github.com/${{ inputs.ksu_repo }} ksu
+          git -C ksu fetch -q --tags origin ${{ inputs.ksu_ref }}
+          git -C ksu checkout -q FETCH_HEAD
+          echo "ksu: $(git -C ksu rev-parse --short HEAD) commits=$(git -C ksu rev-list --count HEAD) => version code $((30700 + $(git -C ksu rev-list --count HEAD)))"
 
       - name: Config (gki_defconfig + device tree fragments)
         working-directory: k
