@@ -74,14 +74,17 @@ jobs:
           # /mnt is the same device as / here, so one budget for swap + kernel tree + out dir.
           # The runner has 8 GB RAM; the ThinLTO vmlinux link needs the overflow.
           avail=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
-          size=$(( avail - 22 ))   # ~25 G for the tree, so leave 22 G
-          [ "$size" -gt 16 ] && size=16
+          size=$(( avail - 28 ))   # ~25 G for the tree + out dir, leave 28 G
+          [ "$size" -gt 12 ] && size=12
           echo "avail=${avail}G swap=${size}G"
           if [ "$size" -lt 4 ]; then echo "::warning::only ${avail}G free, skipping swap"; exit 0; fi
-          sudo fallocate -l ${size}G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # /swapfile already exists in the image (3 G, in use) -> 'Text file busy'
+          sudo swapoff /swapfile.extra 2>/dev/null || true
+          sudo rm -f /swapfile.extra
+          sudo fallocate -l ${size}G /swapfile.extra
+          sudo chmod 600 /swapfile.extra
+          sudo mkswap /swapfile.extra
+          sudo swapon /swapfile.extra
           sudo sysctl -w vm.swappiness=60
           sudo swapon --show; free -h
 
