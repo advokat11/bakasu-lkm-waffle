@@ -10,19 +10,63 @@ on:
     inputs:
       kernel_ref:
         description: yaap/kernel_oneplus_sm8650 commit (hash from uname -r)
+        type: string
         default: 6b7cc6b40d92bac4cd2e399be260497e02fff26b
       ksu_repo:
         description: KernelSU fork (KernelSU-Next/KernelSU-Next reproduces the ROM dev's module)
+        type: string
         default: Baka-SU/BakaSU
       ksu_ref:
         description: branch/tag/sha in ksu_repo; version code = 30700 + git rev-list --count, must match the manager
+        type: string
         default: main
       ksu_config:
         description: extra Kconfig lines for the fork (empty for KernelSU-Next)
+        type: string
         default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
       clang_commit:
         description: platform/prebuilts/clang/host/linux-x86 commit holding the ROM's clang-r596125 build
+        type: string
         default: 9b144befdfd93b90e02c663504fb9f4b95f9faf8
+      release_tag:
+        description: if set, publish kernelsu.ko as a GitHub release with this tag
+        type: string
+        default: ''
+      release_notes:
+        description: body of that release
+        type: string
+        default: ''
+  # called by watch.yml for every new ROM kernel / BakaSU commit
+  workflow_call:
+    inputs:
+      kernel_ref:
+        description: yaap/kernel_oneplus_sm8650 commit (hash from uname -r)
+        type: string
+        default: 6b7cc6b40d92bac4cd2e399be260497e02fff26b
+      ksu_repo:
+        description: KernelSU fork (KernelSU-Next/KernelSU-Next reproduces the ROM dev's module)
+        type: string
+        default: Baka-SU/BakaSU
+      ksu_ref:
+        description: branch/tag/sha in ksu_repo; version code = 30700 + git rev-list --count, must match the manager
+        type: string
+        default: main
+      ksu_config:
+        description: extra Kconfig lines for the fork (empty for KernelSU-Next)
+        type: string
+        default: CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y
+      clang_commit:
+        description: platform/prebuilts/clang/host/linux-x86 commit holding the ROM's clang-r596125 build
+        type: string
+        default: 9b144befdfd93b90e02c663504fb9f4b95f9faf8
+      release_tag:
+        description: if set, publish kernelsu.ko as a GitHub release with this tag
+        type: string
+        default: ''
+      release_notes:
+        description: body of that release
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -106,6 +150,7 @@ jobs:
           git -C ksu fetch -q --tags origin ${{ inputs.ksu_ref }}
           git -C ksu checkout -q FETCH_HEAD
           echo "ksu: $(git -C ksu rev-parse --short HEAD) commits=$(git -C ksu rev-list --count HEAD) => version code $((30700 + $(git -C ksu rev-list --count HEAD)))"
+          echo "KSU_VERSION=$((30700 + $(git -C ksu rev-list --count HEAD)))" >> "$GITHUB_ENV"
 
       - name: Config (gki_defconfig + device tree fragments)
         working-directory: k
@@ -143,8 +188,21 @@ jobs:
           make O=out -j$(nproc) drivers/kernelsu/kernelsu.ko
           llvm-strip -d -o $GITHUB_WORKSPACE/kernelsu.ko out/drivers/kernelsu/kernelsu.ko
           strings $GITHUB_WORKSPACE/kernelsu.ko | grep -E '^vermagic=|^intree=|@ReSukiSU|welcome to KernelSU'
+          strings $GITHUB_WORKSPACE/kernelsu.ko | grep -m1 '^vermagic=' > $GITHUB_WORKSPACE/vermagic.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: kernelsu-${{ inputs.ksu_ref }}-${{ github.run_id }}
           path: kernelsu.ko
+
+      - name: Release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          printf '%s\n\nKernelSU version code: %s\n%s\n' "$NOTES" "$KSU_VERSION" "$(cat vermagic.txt)" > notes.md
+          gh release create "$TAG" kernelsu.ko --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG (KSU $KSU_VERSION)" --notes-file notes.md

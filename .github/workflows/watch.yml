@@ -1,0 +1,148 @@
+name: Watch YAAP waffle releases and BakaSU commits
+
+# Polls (neither upstream can notify this repo):
+# - yaap/ota-info: the newest waffle OTA; its boot.img gives the kernel commit (the -g<hash> in "Linux version")
+# - Baka-SU/BakaSU main
+# and builds via build.yml whenever the pair (kernel commit, BakaSU commit) has no release yet.
+# A new ROM with an unchanged kernel does not rebuild: the module would be byte-identical.
+
+on:
+  schedule:
+    - cron: '23 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: rebuild even if a release for this kernel + BakaSU commit exists
+        type: boolean
+        default: false
+
+# one watcher at a time, so a cron tick during a long build doesn't start the same build twice
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  KSU_REPO: Baka-SU/BakaSU
+  KSU_BRANCH: main
+  KERNEL_REPO: yaap/kernel_oneplus_sm8650
+  # clang build id the ROM's kernel must report; bump together with clang_commit / r596125 in build.yml
+  CLANG_BUILD: '15071444'
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      kernel_ref: ${{ steps.decide.outputs.kernel_ref }}
+      ksu_ref: ${{ steps.latest.outputs.ksu }}
+      tag: ${{ steps.decide.outputs.tag }}
+      notes: ${{ steps.decide.outputs.notes }}
+    steps:
+      - name: Latest ROM and BakaSU commit
+        id: latest
+        run: |
+          set -euo pipefail
+          ksu=$(git ls-remote "https://github.com/$KSU_REPO" "refs/heads/$KSU_BRANCH" | cut -f1)
+          [ -n "$ksu" ] || { echo "::error::cannot resolve $KSU_REPO $KSU_BRANCH"; exit 1; }
+          # signed builds live on full-signed, full-signed-1, ...; take the newest waffle.json among them
+          best=0
+          for b in $(gh api 'repos/yaap/ota-info/branches?per_page=100' --jq '.[].name | select(startswith("full-signed"))'); do
+            j=$(gh api -H 'Accept: application/vnd.github.raw' "repos/yaap/ota-info/contents/waffle/waffle.json?ref=$b" 2>/dev/null) || continue
+            t=$(jq -r '.response[0].datetime // 0' <<<"$j")
+            if [ "$t" -gt "$best" ]; then
+              best=$t
+              rom=$(jq -r '.response[0].filename' <<<"$j")
+              url=$(jq -r '.response[0].url' <<<"$j")
+            fi
+          done
+          [ "$best" -gt 0 ] || { echo "::error::no waffle/waffle.json in yaap/ota-info"; exit 1; }
+          echo "rom=$rom ($(date -ud @$best)) url=$url ksu=$ksu"
+          { echo "ksu=$ksu"; echo "rom=$rom"; echo "url=$url"; } >> "$GITHUB_OUTPUT"
+
+      # the OTA is ~4 GB; remember each ROM's kernel version so it is downloaded once
+      - uses: actions/cache@v4
+        id: kver
+        with:
+          path: kver.txt
+          key: kver-${{ steps.latest.outputs.rom }}
+
+      - name: Kernel version from the ROM's boot.img
+        if: steps.kver.outputs.cache-hit != 'true'
+        env:
+          URL: ${{ steps.latest.outputs.url }}
+        run: |
+          set -euxo pipefail
+          curl -fsSL --retry 3 -o ota.zip "$URL"
+          v=2.1.0
+          curl -fsSL "https://github.com/ssut/payload-dumper-go/releases/download/$v/payload-dumper-go_${v}_linux_amd64.tar.gz" | tar xz payload-dumper-go
+          ./payload-dumper-go -p boot -o out ota.zip
+          rm ota.zip
+          # kernel blob from the boot image (header v3/v4: 4096-byte pages; older: page size in the header)
+          python3 - out/boot.img <<'EOF'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read()
+          assert d[:8] == b'ANDROID!', 'not an Android boot image'
+          size, = struct.unpack_from('<I', d, 8)
+          hv, = struct.unpack_from('<I', d, 40)
+          page = 4096 if hv >= 3 else struct.unpack_from('<I', d, 36)[0]
+          open('kernel', 'wb').write(d[page:page + size])
+          EOF
+          case $(head -c4 kernel | od -An -tx1 | tr -d ' ') in
+            02214c18) lz4 -dc kernel > Image ;;
+            1f8b*)    gzip -dc kernel > Image ;;
+            *)        mv kernel Image ;;
+          esac
+          strings Image | grep -m1 '^Linux version' > kver.txt
+          cat kver.txt
+
+      - name: Decide
+        id: decide
+        env:
+          FORCE: ${{ inputs.force }}
+          ROM: ${{ steps.latest.outputs.rom }}
+          KSU: ${{ steps.latest.outputs.ksu }}
+        run: |
+          set -euo pipefail
+          cat kver.txt
+          if ! grep -q "Android ($CLANG_BUILD," kver.txt; then
+            echo "::error::$ROM was built with a different clang than $CLANG_BUILD; update clang_commit/r596125 in build.yml and CLANG_BUILD here"
+            exit 1
+          fi
+          short=$(grep -oE -- '-g[0-9a-f]{12,40}' kver.txt | head -1 | cut -c3-)
+          [ -n "$short" ] || { echo "::error::no -g<hash> in the kernel version"; exit 1; }
+          kernel=$(gh api "repos/$KERNEL_REPO/commits/$short" --jq .sha)
+          tag="waffle-k${kernel:0:12}-bakasu-${KSU:0:8}"
+          if [ "$FORCE" != true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=false
+          else
+            build=true
+          fi
+          echo "kernel=$kernel tag=$tag build=$build"
+          {
+            echo "build=$build"; echo "kernel_ref=$kernel"; echo "tag=$tag"
+            echo "notes<<EOF_NOTES"
+            echo "ROM: $ROM"
+            echo "Kernel: https://github.com/$KERNEL_REPO/commit/$kernel"
+            echo "BakaSU: https://github.com/$KSU_REPO/commit/$KSU"
+            echo "$(cat kver.txt)"
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+          echo "**$tag** build=$build (ROM $ROM)" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      kernel_ref: ${{ needs.detect.outputs.kernel_ref }}
+      ksu_repo: Baka-SU/BakaSU
+      ksu_ref: ${{ needs.detect.outputs.ksu_ref }}
+      release_tag: ${{ needs.detect.outputs.tag }}
+      release_notes: ${{ needs.detect.outputs.notes }}
