@@ -1,7 +1,7 @@
 name: Watch YAAP waffle releases and BakaSU commits
 
 # Polls (neither upstream can notify this repo):
-# - yaap/ota-info: the newest waffle OTA; its boot.img gives the kernel commit (the -g<hash> in "Linux version")
+# - yaap/ota-info: the newest waffle OTA; its boot.img gives the kernel commit (the -@<hash> in "Linux version")
 # - Baka-SU/BakaSU main
 # and builds via build.yml whenever the pair (kernel commit, BakaSU commit) has no release yet.
 # A new ROM with an unchanged kernel does not rebuild: the module would be byte-identical.
@@ -113,8 +113,9 @@ jobs:
             echo "::error::$ROM was built with a different clang than $CLANG_BUILD; update clang_commit/r596125 in build.yml and CLANG_BUILD here"
             exit 1
           fi
-          short=$(grep -oE -- '-g[0-9a-f]{12,40}' kver.txt | head -1 | cut -c3-)
-          [ -n "$short" ] || { echo "::error::no -g<hash> in the kernel version"; exit 1; }
+          # release "uname -r" carries the commit as 6.1.x-@<hash>; stock kbuild uses -g<hash>
+          short=$(grep -oE -- '-(@|g)[0-9a-f]{7,40}' kver.txt | head -1 | cut -c3-)
+          [ -n "$short" ] || { echo "::error::no commit hash (-@<hash> / -g<hash>) in the kernel version"; exit 1; }
           kernel=$(gh api "repos/$KERNEL_REPO/commits/$short" --jq .sha)
           tag="waffle-k${kernel:0:12}-bakasu-${KSU:0:8}"
           if [ "$FORCE" != true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
